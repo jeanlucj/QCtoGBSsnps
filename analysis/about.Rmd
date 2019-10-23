@@ -7,4 +7,4 @@ editor_options:
   chunk_output_type: console
 ---
 
-Describe your project.
+Simple code to make QC SNP allele calls comparable to legacy GBS allele calls, and then, for clones that have both GBS and QC SNPS, compare the GBS and the QC SNP finger prints.

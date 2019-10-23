@@ -8,4 +8,6 @@ editor_options:
   chunk_output_type: console
 ---
 
-Welcome to my research website.
+Welcome to an attempt to use the new R package workflowr to make a more readable presentation of functions to compare QC SNPs with legacy GBS SNPs.
+
+[Relate QC SNPs to GBS SNPs](./RelateQCsnpsToGBSsnps.html)

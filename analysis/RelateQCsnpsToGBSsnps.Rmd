@@ -1,0 +1,171 @@
+---
+title: "QC to GBS functions and Script"
+author: "Jean-Luc Jannink"
+date: "10/22/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Convert QC file to dosages
+Function that converts nucleotide allele calls to dosages  
+Takes a character vector where genotypes are of the form  
+A:A, A:G, G:G  
+All other strings in the vector will get NA dosages  
+The QC SNP file was sent to Jean-Luc Jannink by Ismail Rabbi
+```{r Make the QC dosage matrix}
+getQCdosage <- function(qcVec){
+  uqcVec <- unique(qcVec)
+  qcGen <- uqcVec[nchar(uqcVec) == 3] # Genotypes have three characters
+  alleles <- sort(unique(unlist(strsplit(qcGen, ":", fixed=T))))
+  alleleCount <- gregexpr(alleles[1], qcVec) # if alleles[1] absent: -1
+  # if Heterozygote: length == 1, if Homozygote: length = 2
+  dosage <- sapply(alleleCount, length) 
+  dosage[sapply(alleleCount, function(ac) ac[1] < 0)] <- 0 # set absent to 0
+  setNA <- setdiff(uqcVec, qcGen) 
+  dosage[qcVec %in% setNA] <- NA # Everything else gets NA
+  return(list(alleles=alleles, dosage=dosage)) # Return list
+}
+
+# QC SNPs in columns, clones in rows
+qcSNPs <- read.csv("./data/QCAllSNPsAllPlatesJuly42018.csv", stringsAsFactors=F)
+qcSNPdosage <- apply(qcSNPs[,-(1:7)], 2, getQCdosage)
+qcSNPalleles <- sapply(qcSNPdosage, function(li) li[[1]])
+qcSNPdosage <- sapply(qcSNPdosage, function(li) li[[2]]) # Make dosage matrix
+```
+
+Some curation on the sample names  
+If CHECK was there, remove  
+Some clone synonyms recorded: make them all the same
+```{r Manual curation}
+qcSNPs$SampleNameNoChk <- gsub("CHECK", "", qcSNPs$SampleName)
+qcSNPs$SampleNameNoChk[qcSNPs$SampleNameNoChk == "I30572"] <- "IITA-TMS-IBA30572"
+qcSNPs$SampleNameNoChk[qcSNPs$SampleNameNoChk %in% c("IBA980581", "I980581")] <- "IITA-TMS-IBA3980581"
+```
+
+## Mislabeling in repeat QC
+Function to figure out the correlation between dosages for a clone  
+that has been repeatedly QCed.  Error threshold if correlation < 0.9.  
+Return how many mislabeled clones there were in the set  
+Give the total number of replications and the total number of times there was  
+mislabeling among those replications  
+`colSums` output shows that there is a ~ 11% error rate on clones  
+that have been nTimesQCed with QC SNPs
+```{r Mislabeling among QC SNPed samples}
+nMislabeledClones <- function(cloneName){
+  dosages <- t(qcSNPdosage[qcSNPs$SampleNameNoChk == cloneName,])
+  corQC <- cor(dosages, use="pairwise.complete")
+  y <- sum(corQC < 0.9)
+  n <- ncol(dosages)
+  # Complicated formula, simple output: given n replications
+  # and y pairwise observations of lack of correlation
+  # how many of the replications were mislabeled?
+  return(c(n, (2*n - 1 - sqrt((2*n - 1)^2 - 4*y))/2))
+}
+
+nTimesQC <- table(qcSNPs$SampleNameNoChk)
+nTimesQC <- nTimesQC[nTimesQC > 1]
+
+mislabelData <- t(sapply(names(nTimesQC), nMislabeledClones))
+rownames(mislabelData) <- names(nTimesQC)
+mislabelData <- mislabelData[order(rownames(mislabelData)),]
+colSums(mislabelData)
+```
+
+For clones that have been QC'ed more than once, calculate "majority rules"  
+allele dosages
+```{r Majority rules dosages}
+calcMajRuleDos <- function(cloneName){
+  nAndErr <- mislabelData[cloneName,]
+  if (nAndErr[2] < nAndErr[1] / 2){ # nMislabeled less than half of replicates
+    dosages <- qcSNPdosage[qcSNPs$SampleNameNoChk == cloneName,]
+    dosages <- round(colMeans(dosages, na.rm=T))
+  } else{
+    dosages <- rep(NA, ncol(qcSNPdosage))
+  }
+  return(dosages)
+}
+majRuleDosages <- t(sapply(rownames(mislabelData), calcMajRuleDos))
+majRuleDosages <- majRuleDosages[!is.na(majRuleDosages[,1]),]
+```
+
+Make matrices that have the same clones and SNPs, but one from GBS and  
+the other from QC
+Among the GBS SNPs that I have readily available, I found 85 clones  
+having both GBS and QC SNPs, and 37 (not 40!) SNPs in both sets
+```{r Make common matrices}
+gbsDosages <- readRDS("./data/qcSNPnamedGBSdosages.rds")
+# Which clones have both QC and gbs SNPs?
+clonesBoth <- intersect(rownames(majRuleDosages), rownames(gbsDosages))
+# Which SNPS are in both QC and GBS sets?
+snpsBoth <- intersect(colnames(majRuleDosages), colnames(gbsDosages))
+gbsOfQC <- gbsDosages[clonesBoth, snpsBoth]
+qcOfGBS <- majRuleDosages[clonesBoth, snpsBoth]
+```
+
+## Common coding for QC and GBS
+Problem: we have dosages for GBS and dosages for the QC SNPs but we don't  
+know if they were _coded_ the same way: maybe one allele was  
+counted (0, 1, 2) for GBS but the other allele was counted for QC  
+Solution: correlate the dosages across GBS and QC.  If the correlation  
+is negative, that means that they were coded with opposite alleles.  
+If the correlation is positive, they were coded the same way.  
+Since `getQCdosage` arbitrarily coded the SNPs one way, about half  
+are reversed relative to GBS
+```{r Correlation by SNP}
+corBySNP <- sapply(1:ncol(gbsOfQC), function(i) cor(gbsOfQC[,i], qcOfGBS[,i], use="pairwise.complete.obs"))
+hist(corBySNP)
+```
+
+For the SNPs that were coded opposite, flip the dosages
+```{r Flip opposite SNPs}
+qcOfGBS[,corBySNP < 0] <- 2 - qcOfGBS[,corBySNP < 0]
+```
+
+## Mislabeling between QC and GBS
+Now that the SNPs are all coded the same way, correlate by clone  
+If there is not a high correlation, the GBS sample and the QC sample  
+were not taken from the same genetic individual
+```{r Find mislabeled clones}
+corByClone <- sapply(1:nrow(gbsOfQC), function(i) cor(gbsOfQC[i,], qcOfGBS[i,], use="pairwise.complete.obs"))
+names(corByClone) <- rownames(qcOfGBS)
+# Make a pretty histogram
+hist(corByClone, xlab="Correlation of dosages by GBS vs QC", main=paste0(nrow(qcOfGBS), " Clones Matched"), cex.axis=1.3, cex.lab=1.3)
+print(rownames(qcOfGBS)[corByClone < 0.75])
+```
+
+Remove clones from the set that appear to be mislabeled
+```{r Remove mislabeled clones}
+gbsOfQCClean <- gbsOfQC[corByClone > 0.75,]
+qcOfGBSClean <- qcOfGBS[corByClone > 0.75,]
+```
+
+## SNPs where GBS and QC disagree
+With this cleaned set check the correlations between GBS and QC SNPs  
+for each _SNP_.  Low correlation means the SNP does not track well between  
+GBS and KASP  
+```{r Remove SNPs that do not track}
+corBySNP <- sapply(1:ncol(gbsOfQCClean), function(i) cor(gbsOfQCClean[,i], qcOfGBSClean[,i], use="pairwise.complete.obs"))
+hist(corBySNP)
+```
+
+The two worst SNPs (cor of 0.71 and 0.81) are both on Chr. 5  
+S5_1476447 and S5_25731301
+```{r Remove SNPs 2}
+colnames(qcOfGBSClean)[corBySNP < 0.85]
+qcOfGBSClean <- qcOfGBSClean[,corBySNP > 0.85]
+gbsOfQCClean <- gbsOfQCClean[,corBySNP > 0.85]
+```
+
+## Clones where QC and GBS agree
+Retest the clones.  The GBS to QC correlation per clone is improved  
+The GBS to QC correlation per clone is improved with only good SNPs
+```{r Final QC to GBS correlation}
+goodClones <- sapply(1:nrow(qcOfGBSClean), function(i) cor(gbsOfQCClean[i,], qcOfGBSClean[i,], use="pairwise.complete.obs"))
+plot(corByClone[rownames(qcOfGBSClean)], goodClones)
+lines(c(0,1), c(0,1))
+hist(goodClones, xlab="Correlation of dosages by GBS vs QC", main=paste0(nrow(qcOfGBSClean), " Good Clones"), cex.axis=1.3, cex.lab=1.3)
+```
+
