@@ -11,3 +11,23 @@ editor_options:
 Welcome to an attempt to use the new R package workflowr to make a more readable presentation of functions to compare QC SNPs with legacy GBS SNPs.
 
 [Relate QC SNPs to GBS SNPs](./RelateQCsnpsToGBSsnps.html)
+
+## R Code
+The R code used with `workflowr`:
+```{r First workflowr R code, eval=FALSE}
+library(workflowr)
+wflow_start("~/Documents/GitRepo/QCtoGBSsnps", name="QCtoGBSsnps", user.name="jeanlucj", user.email="jeanluc.work@gmail.com")
+wflow_build()
+wflow_status()
+wflow_publish(files="analysis/RelateQCsnpsToGBSsnps.Rmd", message="First completed set of scripts to correlate QC SNPs with GBS SNPs", all=TRUE)
+install.packages("httpuv")
+wflow_use_github("jeanlucj")
+wflow_git_push()
+```
+
+This second bit of code is to update the index.html file
+```{r Second workflowr R code, eval=FALSE}
+wflow_publish(all=TRUE, message="Update the index to show the R code used")
+wflow_git_push()
+```
+
